@@ -1,0 +1,350 @@
+name: Build iPhone game
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Install project generator
+        run: |
+          if ! command -v xcodegen >/dev/null; then
+            brew install xcodegen
+          fi
+
+      - name: Create game
+        run: |
+          mkdir -p Sources
+
+          cat > project.yml <<'EOF'
+          name: MemArena
+          options:
+            deploymentTarget:
+              iOS: "16.0"
+          settings:
+            base:
+              SWIFT_VERSION: "5.0"
+              CODE_SIGNING_ALLOWED: NO
+          targets:
+            MemArena:
+              type: application
+              platform: iOS
+              sources:
+                - path: Sources
+                  excludes:
+                    - Info.plist
+              settings:
+                base:
+                  PRODUCT_BUNDLE_IDENTIFIER: com.memarena.arcade
+                  TARGETED_DEVICE_FAMILY: "1"
+              info:
+                path: Sources/Info.plist
+                properties:
+                  CFBundleDisplayName: Мем-арена
+                  CFBundleShortVersionString: "1.0"
+                  CFBundleVersion: "1"
+                  UILaunchScreen: {}
+                  UISupportedInterfaceOrientations:
+                    - UIInterfaceOrientationPortrait
+          EOF
+
+          cat > Sources/Game.swift <<'EOF'
+          import SwiftUI
+          import SpriteKit
+          import UIKit
+
+          @main
+          struct MemArenaApp: App {
+              private let scene: MemeScene = {
+                  let s = MemeScene(size: CGSize(width: 390, height: 844))
+                  s.scaleMode = .resizeFill
+                  return s
+              }()
+
+              var body: some Scene {
+                  WindowGroup {
+                      SpriteView(scene: scene)
+                          .ignoresSafeArea()
+                          .statusBarHidden(true)
+                  }
+              }
+          }
+
+          final class MemeScene: SKScene {
+              private let player = SKLabelNode(text: "😎")
+              private let hud = SKLabelNode(fontNamed: "AvenirNext-Bold")
+              private let reaction = SKLabelNode(fontNamed: "AvenirNext-Heavy")
+              private var score = 0
+              private var lives = 3
+              private var combo = 0
+              private var ended = false
+              private var lastSpawn: TimeInterval = 0
+              private var previousTime: TimeInterval = 0
+              private var elapsed: TimeInterval = 0
+
+              private let phrases = [
+                  "МЕМНЫЙ РАЗНОС 😂",
+                  "ЧАТ В ШОКЕ",
+                  "ЛОВИМ ХАЙП 🔥",
+                  "ВОТ ЭТО ЗАЛЁТ",
+                  "КОМБО ПОДЪЕХАЛО",
+                  "БЕЗ ШАНСОВ 💸"
+              ]
+
+              override func didMove(to view: SKView) {
+                  view.isMultipleTouchEnabled = false
+                  startGame()
+              }
+
+              private func label(
+                  _ text: String,
+                  size fontSize: CGFloat,
+                  y: CGFloat,
+                  color: UIColor = .white
+              ) -> SKLabelNode {
+                  let node = SKLabelNode(fontNamed: "AvenirNext-Heavy")
+                  node.text = text
+                  node.fontSize = fontSize
+                  node.fontColor = color
+                  node.position = CGPoint(x: size.width / 2, y: y)
+                  node.zPosition = 10
+                  addChild(node)
+                  return node
+              }
+
+              private func startGame() {
+                  removeAllChildren()
+                  removeAllActions()
+                  backgroundColor = UIColor(
+                      red: 0.055, green: 0.035, blue: 0.12, alpha: 1
+                  )
+                  score = 0
+                  lives = 3
+                  combo = 0
+                  ended = false
+                  lastSpawn = 0
+                  previousTime = 0
+                  elapsed = 0
+
+                  _ = label(
+                      "МЕЛЛСТРОЙ: МЕМ-АРЕНА",
+                      size: 21,
+                      y: size.height - 105,
+                      color: .systemYellow
+                  )
+
+                  hud.fontSize = 18
+                  hud.fontColor = .white
+                  hud.position = CGPoint(
+                      x: size.width / 2, y: size.height - 139
+                  )
+                  hud.zPosition = 10
+                  addChild(hud)
+
+                  reaction.removeAllActions()
+                  reaction.text = "ЛОВИ 💸 · ИЗБЕГАЙ БАНА"
+                  reaction.fontSize = 19
+                  reaction.fontColor = .systemPink
+                  reaction.alpha = 1
+                  reaction.position = CGPoint(
+                      x: size.width / 2, y: size.height - 185
+                  )
+                  reaction.zPosition = 10
+                  addChild(reaction)
+
+                  player.removeAllActions()
+                  player.fontSize = 62
+                  player.verticalAlignmentMode = .center
+                  player.horizontalAlignmentMode = .center
+                  player.position = CGPoint(x: size.width / 2, y: 125)
+                  player.zPosition = 5
+                  player.setScale(1)
+                  addChild(player)
+
+                  _ = label(
+                      "Двигай пальцем влево и вправо",
+                      size: 15, y: 55, color: .lightGray
+                  )
+                  refreshHUD()
+              }
+
+              private func refreshHUD() {
+                  hud.text = "💸 \(score)     ❤️ \(lives)     ×\(combo)"
+              }
+
+              private func say(_ text: String) {
+                  reaction.removeAllActions()
+                  reaction.text = text
+                  reaction.alpha = 1
+                  reaction.setScale(0.85)
+                  reaction.run(.sequence([
+                      .scale(to: 1.06, duration: 0.1),
+                      .scale(to: 1, duration: 0.12),
+                      .wait(forDuration: 0.85),
+                      .fadeAlpha(to: 0.3, duration: 0.35)
+                  ]))
+              }
+
+              private func spawn() {
+                  let roll = Int.random(in: 0..<100)
+                  let isBan = roll < 30
+                  let isFire = roll >= 90
+                  let item = SKLabelNode(fontNamed: "AvenirNext-Heavy")
+                  item.name = isBan ? "ban" : (isFire ? "fire" : "cash")
+                  item.text = isBan ? "БАН" : (isFire ? "🔥" : "💸")
+                  item.fontSize = isBan ? 27 : 39
+                  item.fontColor = .systemRed
+                  item.verticalAlignmentMode = .center
+                  item.position = CGPoint(
+                      x: CGFloat.random(in: 45...(size.width - 45)),
+                      y: size.height - 210
+                  )
+                  addChild(item)
+
+                  let duration = max(1.15, 3.1 - elapsed * 0.018)
+                  item.run(.sequence([
+                      .moveTo(y: -65, duration: duration),
+                      .removeFromParent()
+                  ]))
+              }
+
+              override func update(_ currentTime: TimeInterval) {
+                  guard !ended else { return }
+                  if previousTime == 0 { previousTime = currentTime }
+                  elapsed += min(currentTime - previousTime, 0.05)
+                  previousTime = currentTime
+
+                  let interval = max(0.23, 0.64 - elapsed * 0.003)
+                  if currentTime - lastSpawn > interval {
+                      lastSpawn = currentTime
+                      spawn()
+                  }
+
+                  for item in children {
+                      guard let name = item.name,
+                            ["ban", "cash", "fire"].contains(name),
+                            item.frame.intersects(
+                                player.frame.insetBy(dx: 11, dy: 9)
+                            ) else { continue }
+
+                      item.removeFromParent()
+                      if name == "ban" {
+                          lives -= 1
+                          combo = 0
+                          say("БАН ПРИЛЕТЕЛ 💀")
+                          UIImpactFeedbackGenerator(style: .heavy)
+                              .impactOccurred()
+                          player.run(.sequence([
+                              .fadeAlpha(to: 0.25, duration: 0.08),
+                              .fadeAlpha(to: 1, duration: 0.08)
+                          ]))
+                      } else {
+                          combo += 1
+                          score += (name == "fire" ? 50 : 10)
+                              * min(5, 1 + combo / 5)
+                          if name == "fire" {
+                              say("ОГНЕННЫЙ ЗАЛЁТ 🔥")
+                          } else if combo % 5 == 0 {
+                              say(phrases.randomElement()!)
+                          }
+                          UIImpactFeedbackGenerator(style: .light)
+                              .impactOccurred()
+                      }
+
+                      refreshHUD()
+                      if lives <= 0 {
+                          finish()
+                          break
+                      }
+                  }
+              }
+
+              private func finish() {
+                  ended = true
+                  for child in children { child.removeAllActions() }
+
+                  let best = max(
+                      score, UserDefaults.standard.integer(forKey: "best")
+                  )
+                  UserDefaults.standard.set(best, forKey: "best")
+
+                  let panel = SKSpriteNode(
+                      color: UIColor.black.withAlphaComponent(0.88),
+                      size: size
+                  )
+                  panel.position = CGPoint(
+                      x: size.width / 2, y: size.height / 2
+                  )
+                  panel.zPosition = 20
+                  addChild(panel)
+
+                  let lines: [(String, CGFloat, CGFloat)] = [
+                      ("ЧАТ, ЭТО БАН 💀", 29, 65),
+                      ("Счёт: \(score) · Рекорд: \(best)", 20, 15),
+                      ("Нажми, чтобы играть ещё", 19, -45)
+                  ]
+                  for (text, font, offset) in lines {
+                      let node = label(
+                          text, size: font, y: size.height / 2 + offset
+                      )
+                      node.zPosition = 21
+                  }
+                  lastSpawn = previousTime
+              }
+
+              private func movePlayer(_ touches: Set<UITouch>) {
+                  guard let touch = touches.first else { return }
+                  let x = touch.location(in: self).x
+                  player.position.x = min(max(x, 35), size.width - 35)
+              }
+
+              override func touchesBegan(
+                  _ touches: Set<UITouch>, with event: UIEvent?
+              ) {
+                  if ended {
+                      // Avoid an accidental restart on the losing touch.
+                      if CACurrentMediaTime() - lastSpawn > 0.5 {
+                          startGame()
+                      }
+                  } else {
+                      movePlayer(touches)
+                  }
+              }
+
+              override func touchesMoved(
+                  _ touches: Set<UITouch>, with event: UIEvent?
+              ) {
+                  if !ended { movePlayer(touches) }
+              }
+          }
+          EOF
+
+      - name: Build unsigned iPhone app
+        run: |
+          xcodegen generate
+          xcodebuild \
+            -project MemArena.xcodeproj \
+            -scheme MemArena \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Package IPA
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/MemArena.app Payload/
+          zip -qry MemArena.ipa Payload
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: MemArena-IPA
+          path: MemArena.ipa
+          retention-days: 7
